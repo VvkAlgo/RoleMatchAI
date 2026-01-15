@@ -1,0 +1,6 @@
+gmail_token.json
+credentials.json
+gmail_oauth.json
+*.json
+__pycache__/
+.env
