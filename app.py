@@ -33,13 +33,28 @@ st.set_page_config(
 st.title("💼 RoleMatch AI – LinkedIn Job Automation")
 st.markdown("""
 **Description:**  
-Automatically extract job postings, draft professional emails, and track all your applications.
+RoleMatch AI automatically extracts job postings from LinkedIn text, drafts professional job application emails using AI, and tracks all sent applications in Google Sheets.
 
 **How to Use:**  
-1. Upload your LinkedIn `.txt` file.  
-2. Click **Analyze TXT with Gemini** to extract jobs and draft emails.  
-3. Upload your resume when sending emails.  
-4. Use the **Refresh Sheet** button to update your Google Sheet live.  
+1. Upload your **LinkedIn scraped `.txt` file** containing job postings.  
+2. Enter your **Gmail address and App Password** (used only for sending emails). 
+**Gmail App Password Setup:**  
+To send emails, Gmail requires an **App Password** (2-Step Verification must be enabled).  
+Create one here:  
+👉 https://myaccount.google.com/apppasswords 
+3. Upload your **resume (PDF)** and click **Send Email**. 
+4. Click **Analyze TXT with Gemini** to extract valid jobs and generate email drafts.  
+5. Review and edit the generated email if needed.  
+6. Track sent applications live in your **Google Sheet**.
+
+
+**Limitations & Notes:**  
+- Only jobs **located in India** are processed.  
+- Jobs must contain a **valid apply email** to be considered.  
+- Gmail allows roughly **100 emails/day**; recommended limit is **≤ 50/day**.  
+- Emails are sent **one at a time** to avoid spam detection.  
+- Sender credentials are **not stored** and remain session-based only.  
+- Duplicate emails are automatically **blocked** using the Google Sheet.
 
 **Author:** Vivek Upadhyay  
 **LinkedIn:** https://www.linkedin.com/in/vivek-upadhyay-6689b4184/
@@ -107,6 +122,22 @@ else:
     st.stop()
 
 # =========================
+# USER SAMPLE EMAIL TEMPLATE
+# =========================
+st.subheader("✉️ Sample Email Template (Style Reference)")
+
+user_sample_email = st.text_area(
+    "Paste a sample email you like. AI will follow this style for all jobs.",
+    height=160,
+    placeholder="Paste your preferred email format here..."
+)
+
+if not user_sample_email.strip():
+    st.info("Please provide a sample email template to continue.")
+    st.stop()
+
+
+# =========================
 # GOOGLE SHEET CONNECT
 # =========================
 scope = [
@@ -154,7 +185,7 @@ st.caption(f"Text length: {len(gemini_input_text)} characters")
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])  # Replace with your Gemini API key
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-PROMPT = """
+PROMPT =f"""
 You are a highly skilled AI assistant specialized in analyzing job postings and drafting professional job application emails.
 
 Your input text may contain multiple, unstructured job postings scraped from LinkedIn or other sources.
@@ -167,14 +198,14 @@ Your tasks:
    - Is located OUTSIDE India
 3. For each remaining job:
    - Extract ONLY factual information explicitly present in the text
-   - Generate a professional, polite, concise email draft based on the template below
+   - Generate a professional, polite, concise email draft by FOLLOWING the STYLE and STRUCTURE of the template below
    - Ensure emails are human-like, coherent, and well-formatted
 
 Strict JSON output schema:
 
-{
+{{
   "jobs": [
-    {
+    {{
       "job_title": string,
       "company": string,
       "apply_email": string,
@@ -184,23 +215,16 @@ Strict JSON output schema:
       "jd_summary": string,         # 1-2 sentences summarizing role, tech stack, and expectations
       "email_subject": string,      # Clear, professional subject, e.g., "Application for <Job Title> role"
       "email_body_draft": string    # Polished email, max 2 short paragraphs + closing
-    }
+    }}
   ]
-}
+}}
 
 Rules for `email_body_draft`:
-- Base template to adapt:
+- Style reference template (DO NOT COPY TEXT):
 
-"Dear Sir/Mam,
-
-I’m applying for the Snowflake Engineer role. I have hands-on 3 years experience with Snowflake, SQL, Python, Power BI, and Matillion, along with building CI/CD pipelines on Azure. I’m a Certified Snowflake Advanced Architect and Databricks Professional Certified, with a strong focus on scalable and reliable data solutions. I’d love the opportunity to contribute to your team.
-Please find my resume attached.
-
-Best regards, 
-Vivek Upadhyay
-Snowflake Engineer 
-vivekupadhyay_rockstar@gmail.com"
-
+\"\"\"
+{user_sample_email}
+\"\"\"
 - Preserve tone and structure
 - Lightly customize for each job using job title, skills, and JD summary
 - Keep paragraphs short and readable
@@ -216,7 +240,6 @@ Additional instructions:
 
 TEXT TO ANALYZE:
 """
-
 
 # =========================
 # RUN GEMINI ANALYSIS
