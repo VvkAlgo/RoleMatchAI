@@ -1,28 +1,20 @@
 # =========================
-# app.py – Job Automation UI
+# app.py – RoleMatch AI Job Automation
 # =========================
 
 import os
 import json
-import base64
 import pandas as pd
 import streamlit as st
 from datetime import datetime
+import smtplib
+from email.message import EmailMessage
 
 # -------------------------
 # GOOGLE SHEETS
 # -------------------------
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
-# -------------------------
-# GMAIL
-# -------------------------
-from email.message import EmailMessage
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
 
 # -------------------------
 # GEMINI
@@ -54,22 +46,64 @@ Automatically extract job postings, draft professional emails, and track all you
 """)
 st.markdown("---")
 
+# =========================
 # CONFIG
 # =========================
 SHEET_NAME = "Job Tracker"
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+def get_or_create_user_sheet(client, spreadsheet_name, user_email):
+    sh = client.open(spreadsheet_name)
+
+    # Safe worksheet name
+    sheet_title = user_email.replace("@", "_").replace(".", "_")
+
+    try:
+        worksheet = sh.worksheet(sheet_title)
+    except gspread.WorksheetNotFound:
+        worksheet = sh.add_worksheet(
+            title=sheet_title,
+            rows=1000,
+            cols=10
+        )
+        worksheet.append_row([
+            "Post ID",
+            "Job Title",
+            "Company",
+            "Contact Email",
+            "Status",
+            "Relevance",
+            "Notes",
+            "Date Processed"
+        ])
+
+    return worksheet
+
 
 # =========================
 # UPLOAD RESUME
 # =========================
-
 st.subheader("📎 Upload Your Resume")
 uploaded_resume = st.file_uploader(
     "Upload your resume (PDF only)", type=["pdf"]
 )
-
 if uploaded_resume is None:
     st.info("Please upload your resume to continue.")
+    st.stop()
+
+# =========================
+# DYNAMIC SENDER EMAIL INPUT
+# =========================
+st.subheader("👤 Sender Email Settings")
+sender_email = st.text_input("Your Gmail address", placeholder="you@gmail.com",key="sender_email")
+sender_app_password = st.text_input(
+    "Your Gmail App Password (16 chars)",
+    type="password",
+    placeholder="Enter your Gmail App Password",  key="sender_app_password"
+)
+if sender_email and sender_app_password:
+    st.success("✅ Sender credentials received")
+else:
+    st.info("Enter Gmail & App Password to continue")
     st.stop()
 
 # =========================
@@ -79,12 +113,12 @@ scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
-
-creds_sheet = ServiceAccountCredentials.from_json_keyfile_name(
-    "credentials.json", scope
+creds_sheet = Credentials.from_service_account_info(
+    json.loads(st.secrets["GOOGLE_CREDENTIALS"]),
+    scopes=scope
 )
 client = gspread.authorize(creds_sheet)
-sheet = client.open(SHEET_NAME).sheet1
+sheet = get_or_create_user_sheet(client, SHEET_NAME, sender_email)
 
 data = pd.DataFrame(sheet.get_all_records())
 
@@ -98,15 +132,13 @@ else:
     st.dataframe(data, use_container_width=True)
 
 # =========================
-# LOAD LATEST TXT FILE
+# UPLOAD LINKEDIN TXT
 # =========================
 st.subheader("📄 Upload LinkedIn TXT File")
-
 uploaded_file = st.file_uploader(
     "Upload the LinkedIn scraped .txt file",
     type=["txt"]
 )
-
 if uploaded_file is None:
     st.info("Please upload a TXT file to continue.")
     st.stop()
@@ -117,11 +149,10 @@ post_id = uploaded_file.name.replace(".txt", "")
 st.success(f"File loaded: {uploaded_file.name}")
 st.caption(f"Text length: {len(gemini_input_text)} characters")
 
-
 # =========================
 # GEMINI SETUP
 # =========================
-genai.configure(api_key="AIzaSyAnq55g2AHBg0KSSBJWUiHFYiVhSaGEgrM")
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])  # Replace with your Gemini API key
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 PROMPT = """
@@ -187,15 +218,16 @@ Additional instructions:
 TEXT TO ANALYZE:
 """
 
+
 # =========================
-# RUN GEMINI
+# RUN GEMINI ANALYSIS
 # =========================
 st.subheader("🤖 Analyze Jobs")
 
 if st.button("Analyze TXT with Gemini"):
     with st.spinner("Analyzing jobs..."):
         response = model.generate_content(
-            PROMPT + gemini_input_text,
+            PROMPT +  "\n\n" + gemini_input_text,
             generation_config={
                 "temperature": 0,
                 "response_mime_type": "application/json",
@@ -213,9 +245,12 @@ if st.button("Analyze TXT with Gemini"):
                     "job_title": job.get("job_title"),
                     "company": job.get("company"),
                     "apply_email": job.get("apply_email"),
+                    "job_type": job.get("job_type"),
+                    "location": job.get("location"),
+                    "skills": job.get("skills"),
                     "jd_summary": job.get("jd_summary"),
                     "email_subject": job.get("email_subject"),
-                    "email_body_draft": job.get("email_body_draft"),
+                    "email_body_draft": job.get("email_body_draft")
                 }
             )
 
@@ -233,9 +268,11 @@ if "job_df" in st.session_state:
         ].tolist()
     else:
         sent_emails = []
+    if "apply_email" not in job_df.columns:
+        job_df["apply_email"] = ""
 
-    job_df_filtered = job_df[
-        ~job_df["apply_email"].isin(sent_emails)
+    job_df_filtered = job_df[(job_df["apply_email"].str.contains("@", na=False)) &
+        (~job_df["apply_email"].isin(sent_emails))
     ].reset_index(drop=True)
 
     st.subheader("✅ Eligible Jobs")
@@ -258,7 +295,7 @@ if "job_df" in st.session_state:
     ].iloc[0]
 
     # =========================
-    # EMAIL EDIT UI
+    # EMAIL EDITOR
     # =========================
     st.subheader("✉️ Email Editor")
 
@@ -271,61 +308,47 @@ if "job_df" in st.session_state:
     )
 
     # =========================
-    # GMAIL AUTH
-    # =========================
-    creds_gmail = None
-    if os.path.exists("gmail_token.json"):
-        creds_gmail = Credentials.from_authorized_user_file(
-            "gmail_token.json", GMAIL_SCOPES
-        )
-
-    if not creds_gmail or not creds_gmail.valid:
-        if creds_gmail and creds_gmail.expired and creds_gmail.refresh_token:
-            creds_gmail.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "gmail_oauth.json", GMAIL_SCOPES
-            )
-            creds_gmail = flow.run_local_server(port=0)
-
-        with open("gmail_token.json", "w") as token:
-            token.write(creds_gmail.to_json())
-
-    # =========================
-    # SEND EMAIL
+    # SEND EMAIL USING SMTP
     # =========================
     if st.button("🚀 Send Email"):
         if email_to in sent_emails:
             st.error("This email was already sent earlier.")
             st.stop()
 
-        gmail_service = build("gmail", "v1", credentials=creds_gmail)
-
         msg = EmailMessage()
+        msg["From"] = sender_email
         msg["To"] = email_to
-        msg["From"] = "me"
         msg["Subject"] = subject
         msg.set_content(body)
 
-        msg.add_attachment(uploaded_resume.read(),maintype="application",subtype="pdf",filename=uploaded_resume.name,)
+        msg.add_attachment(
+            uploaded_resume.read(),
+            maintype="application",
+            subtype="pdf",
+            filename=uploaded_resume.name,
+        )
 
-        encoded = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        gmail_service.users().messages().send(
-            userId="me", body={"raw": encoded}
-        ).execute()
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls()
+                server.login(sender_email, sender_app_password)
+                server.send_message(msg)
 
-        # Append to sheet
-        new_row = [
-            str(job["job_id"]),
-            job["job_title"],
-            job["company"],
-            email_to,
-            "SENT",
-            "YES",
-            f"Mail sent | Subject: {subject}",
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-        ]
+            # Append to sheet
+            new_row = [
+                str(job["job_id"]),
+                job["job_title"],
+                job["company"],
+                email_to,
+                "SENT",
+                "YES",
+                f"Mail sent | Subject: {subject}",
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+            ]
+            sheet.append_row(new_row)
 
-        sheet.append_row(new_row)
-        st.success("✅ Email sent & sheet updated")
-        st.rerun()
+            st.success("✅ Email sent & sheet updated")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Failed to send email: {e}")
